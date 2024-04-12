@@ -1,34 +1,21 @@
+use bytemuck::{Pod, Zeroable};
 
 
-unsafe trait ReprBytes: Sized{
-    fn repr_bytes<'a>(&'a self) -> &'a [u8]{
-        unsafe{
-            std::slice::from_raw_parts(self as *const Self as *const u8, std::mem::size_of::<Self>())
-        }
-    }
-}
-
-trait IntoEntian<T>{
-    fn into_le(&self) -> T;
-    fn into_be(&self) -> T;
+pub trait IntoEntian<T>{
+    fn into_le(self) -> T;
+    fn into_be(self) -> T;
 }
 
 macro_rules! impl_ints {
     ($type:ident, $int:ident) => {
 
-        unsafe impl ReprBytes for $type{
-            fn repr_bytes(&self) -> &[u8]{
-                &self.0
-            }
-        }
-
         impl IntoEntian<$type> for $int{
-            fn into_le(&self) -> $type{
-                $type::from_le(*self)
+            fn into_le(self) -> $type{
+                $type::from_le(self)
             }
 
-            fn into_be(&self) -> $type{
-                $type::from_be(*self)
+            fn into_be(self) -> $type{
+                $type::from_be(self)
             }
         }
 
@@ -78,6 +65,7 @@ impl_ints!(USize, u64);
 
 
 #[repr(C, packed)]
+#[derive(Clone, Copy)]
 struct Header {
     magic: [u8; 4],
     class: U8,
@@ -104,10 +92,11 @@ struct Header {
     index_section_header_names: U16,
 }
 
-unsafe impl ReprBytes for Header{}
+unsafe impl Pod for Header{}
+unsafe impl Zeroable for Header{}
 
 #[repr(C, packed)]
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct ProgramHeader {
     p_type: U32,
     flags: U32,
@@ -118,10 +107,11 @@ struct ProgramHeader {
     mem_size: USize,
     align: USize,
 }
-unsafe impl ReprBytes for ProgramHeader{}
+unsafe impl Pod for ProgramHeader{}
+unsafe impl Zeroable for ProgramHeader{}
 
 #[repr(C, packed)]
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct SectionHeader {
     name_off: U32,
     s_type: U32,
@@ -135,10 +125,11 @@ struct SectionHeader {
     ent_size: USize,
 }
 
-unsafe impl ReprBytes for SectionHeader{}
+unsafe impl Pod for SectionHeader{}
+unsafe impl Zeroable for SectionHeader{}
 
 #[repr(C, packed)]
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct SymbolTableEntry{
     name: U32,
     info: U8,
@@ -148,7 +139,8 @@ struct SymbolTableEntry{
     sym_size: USize
 }
 
-unsafe impl ReprBytes for SymbolTableEntry{}
+unsafe impl Pod for SymbolTableEntry{}
+unsafe impl Zeroable for SymbolTableEntry{}
 
 pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io::Result<()> {
     const PROGRAM_HEADERS: usize = 1;
@@ -279,21 +271,20 @@ pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io
         section_header_num: (SECTION_HEADERS as u16).into_le(),
         index_section_header_names: 1.into_le(),
     };
-
-    file.write_all(header.repr_bytes())?;
+    file.write_all(bytemuck::bytes_of(&header))?;
 
     for ph in &programs{
-        file.write_all(ph.repr_bytes())?;
+        file.write_all(bytemuck::bytes_of(ph))?;
     }
 
     for section in &sections{
-        file.write_all(section.repr_bytes())?;
+        file.write_all(bytemuck::bytes_of(section))?;
     }
 
     file.write_all(str_table::TABLE.as_bytes())?;
 
     for symbol in &symbols{
-        file.write_all(symbol.repr_bytes())?;
+        file.write_all(bytemuck::bytes_of(symbol))?;
     }
 
     // alignment
@@ -301,5 +292,5 @@ pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io
         file.write_all(&[0])?;
     }
 
-    file.write_all(&instructions)
+    file.write_all(instructions)
 }
