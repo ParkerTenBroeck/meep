@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicPtr, AtomicU8};
 use std::sync::Mutex;
 use std::{alloc::Layout, sync::atomic::Ordering};
 
-use bytemuck::Pod;
+use crate::data_traits::TriviallyLoadableData;
 
 #[derive(Clone, Default)]
 pub struct Memory {
@@ -19,14 +19,17 @@ struct Internal {
 }
 
 #[derive(Default)]
-struct PageHandlers{
+struct PageHandlers {
     address_map: HashMap<usize, Box<dyn Page>>,
     available_pages: VecDeque<NonNull<PageContents>>,
 }
 
 impl Drop for Internal {
     fn drop(&mut self) {
-        let PageHandlers{ address_map, available_pages } = self.page_handlers.get_mut().unwrap();
+        let PageHandlers {
+            address_map,
+            available_pages,
+        } = self.page_handlers.get_mut().unwrap();
         for (page_id, ptr) in self.pages.pages.iter_mut().enumerate() {
             if *ptr.get_mut() == ALLOCATING_PAGE {
                 panic!()
@@ -76,59 +79,10 @@ impl Internal {
     }
 }
 
-/// # Safety
-/// The type this is implemented on but have no uninitialized/unused/padding bytes.
-///
-/// All bit representations must be valid. (e.g. `NonZeroU32`, `char`)
-///
-/// Alignment must be equal to the size. (e.g. `[u32; 4]` doesn't meet this requirement but `u32` does)
-/// 
-/// The size of Self must not exeed `std::mem::size_of::<PageContents>()`
-pub unsafe trait PermittedData: Pod {
-    const TEST: () = test::<Self>();
-}
-
-const fn test<T>(){
-    assert!(std::mem::size_of::<T>() <= std::mem::align_of::<T>());
-    assert!(std::mem::size_of::<T>() <= std::mem::size_of::<PageContents>());
-    assert!(std::mem::align_of::<T>() <= std::mem::align_of::<PageContents>());
-}
-
-#[test]
-fn bruh(){
-    testttt([0u8; 2])
-}
-
-unsafe impl PermittedData for [u8;2] {}
-
-#[cfg(target_has_atomic = "8")]
-unsafe impl PermittedData for u8 {}
-#[cfg(target_has_atomic = "8")]
-unsafe impl PermittedData for i8 {}
-
-#[cfg(target_has_atomic = "16")]
-unsafe impl PermittedData for u16 {}
-#[cfg(target_has_atomic = "16")]
-unsafe impl PermittedData for i16 {}
-
-#[cfg(target_has_atomic = "32")]
-unsafe impl PermittedData for u32 {}
-#[cfg(target_has_atomic = "32")]
-unsafe impl PermittedData for i32 {}
-#[cfg(target_has_atomic = "32")]
-unsafe impl PermittedData for f32 {}
-
-#[cfg(target_has_atomic = "64")]
-unsafe impl PermittedData for u64 {}
-#[cfg(target_has_atomic = "64")]
-unsafe impl PermittedData for i64 {}
-#[cfg(target_has_atomic = "64")]
-unsafe impl PermittedData for f64 {}
-
-const PAGE_OFFSET_BITS: usize = 12;
-const PAGE_MAP_BITS: usize = 32-PAGE_OFFSET_BITS;
-const NUM_PAGES: usize = 1<<PAGE_MAP_BITS;
-const PAGE_SIZE: usize = 1<<PAGE_OFFSET_BITS;
+pub const PAGE_OFFSET_BITS: usize = 12;
+pub const PAGE_MAP_BITS: usize = 32 - PAGE_OFFSET_BITS;
+pub const NUM_PAGES: usize = 1 << PAGE_MAP_BITS;
+pub const PAGE_SIZE: usize = 1 << PAGE_OFFSET_BITS;
 
 const EMPTY_PAGE: *mut PageContents = std::ptr::null_mut();
 const ALLOCATING_PAGE: *mut PageContents = std::ptr::NonNull::dangling().as_ptr();
@@ -166,23 +120,23 @@ impl PageMap {
 }
 
 /// # Safety
-/// 
-/// 
+///
+///
 pub unsafe trait Page: 'static {
     /// # Safety
-    /// 
+    ///
     unsafe fn init(&mut self) -> *mut PageContents;
-    
+
     /// # Safety
-    /// 
-    unsafe fn page(&mut self, page_id: u32, page: *mut PageContents);    
-    
+    ///
+    unsafe fn page(&mut self, page_id: u32, page: *mut PageContents);
+
     /// # Safety
-    /// 
-    unsafe fn unpage(&mut self, page_id: u32, page: *mut PageContents);    
-    
+    ///
+    unsafe fn unpage(&mut self, page_id: u32, page: *mut PageContents);
+
     /// # Safety
-    /// 
+    ///
     unsafe fn deinit(&mut self, page: *mut PageContents);
 }
 
@@ -214,7 +168,7 @@ pub struct PageContents {
 
 impl PageContents {
     /// # Safety
-    /// 
+    ///
     /// The pointer must not outlive self
     #[inline(always)]
     pub unsafe fn as_ptr(&self) -> *const [AtomicU8; PAGE_SIZE] {
@@ -222,15 +176,15 @@ impl PageContents {
     }
 
     #[inline(always)]
-    pub fn get<T: PermittedData>(&self, addr: u32) -> &atomic::Atomic<T> {
+    pub fn get<T: TriviallyLoadableData>(&self, addr: u32) -> &atomic::Atomic<T> {
         unsafe { &*self.get_ptr(addr) }
     }
 
     /// # Safety
-    /// 
+    ///
     /// The pointer must not outlive self
     #[inline(always)]
-    pub unsafe fn get_ptr<T: PermittedData>(&self, addr: u32) -> *const atomic::Atomic<T> {
+    pub unsafe fn get_ptr<T: TriviallyLoadableData>(&self, addr: u32) -> *const atomic::Atomic<T> {
         unsafe {
             self.memory
                 .as_ptr()
@@ -250,10 +204,10 @@ const fn calculate_page_offset<T>(addr: u32) -> usize {
     (addr & page_offset_mask::<T>()) as usize
 }
 
-mod arc_opts{
+mod arc_opts {
     #[cfg(target_pointer_width = "64")]
     pub(crate) use core::sync::atomic::AtomicU32 as AtomicCounter;
-    
+
     #[cfg(all(
         not(target_pointer_width = "64"),
         not(target_pointer_width = "16"),
@@ -261,14 +215,13 @@ mod arc_opts{
         feature = "usize-for-small-platforms",
     ))]
     pub(crate) use core::sync::atomic::AtomicUsize as AtomicCounter;
-    
+
     #[cfg(all(
         target_pointer_width = "32",
         not(feature = "usize-for-small-platforms")
     ))]
     pub(crate) use core::sync::atomic::AtomicU16 as AtomicCounter;
-    
-    
+
     #[repr(C)]
     pub struct ArcInner<T> {
         pub data: std::cell::UnsafeCell<T>,
@@ -276,24 +229,24 @@ mod arc_opts{
     }
 }
 
-
 impl Memory {
     pub fn new() -> Self {
-        let raw = unsafe{
-            std::alloc::alloc(std::alloc::Layout::new::<arc_opts::ArcInner<Internal>>())
-        };
-        if raw.is_null(){
-            std::alloc::handle_alloc_error(std::alloc::Layout::new::<arc_opts::ArcInner<Internal>>());
+        let raw =
+            unsafe { std::alloc::alloc(std::alloc::Layout::new::<arc_opts::ArcInner<Internal>>()) };
+        if raw.is_null() {
+            std::alloc::handle_alloc_error(
+                std::alloc::Layout::new::<arc_opts::ArcInner<Internal>>(),
+            );
         }
         let ptr: *mut arc_opts::ArcInner<Internal> = raw.cast();
-        unsafe{
+        unsafe {
             let internal = std::ptr::addr_of_mut!((*ptr).data).cast::<Internal>();
             std::ptr::addr_of_mut!((*internal).page_handlers).write(Default::default());
             std::ptr::addr_of_mut!((*internal).pages).write_bytes(0, 1);
             std::ptr::addr_of_mut!((*ptr).counter).write(arc_opts::AtomicCounter::new(1));
         }
         Self {
-            internal: unsafe{ rclite::Arc::from_raw(ptr.cast()) },
+            internal: unsafe { rclite::Arc::from_raw(ptr.cast()) },
         }
     }
 
@@ -301,7 +254,11 @@ impl Memory {
         _ = self.try_map_page(page_id, FlatPage);
     }
 
-    pub fn try_map_page<P: Page>(&self, page_id: u32, page: P) -> (*const PageContents, Result<(), P>) {
+    pub fn try_map_page<P: Page>(
+        &self,
+        page_id: u32,
+        page: P,
+    ) -> (*const PageContents, Result<(), P>) {
         let mut curr_page_contents = self
             .internal
             .pages
@@ -382,7 +339,7 @@ impl Memory {
 
     #[cold]
     #[inline(never)]
-    fn failure_get<T: PermittedData>(&self, addr: u32) -> NonNull<atomic::Atomic<T>> {
+    fn failure_get<T: TriviallyLoadableData>(&self, addr: u32) -> NonNull<atomic::Atomic<T>> {
         let page = self.try_map_page(addr >> PAGE_OFFSET_BITS, FlatPage).0;
         unsafe { NonNull::new((*page).get_ptr(addr).cast_mut()).unwrap_unchecked() }
     }
@@ -396,7 +353,7 @@ impl Memory {
     /// Undefined behavior when kept around long enough but the mapping of the pointed to memory in this virtual memory
     /// Can change while holding onto the pointer. This can cause unintended side effects and behavior
     #[inline(always)]
-    pub unsafe fn get<T: PermittedData>(&self, addr: u32) -> NonNull<atomic::Atomic<T>> {
+    pub unsafe fn get<T: TriviallyLoadableData>(&self, addr: u32) -> NonNull<atomic::Atomic<T>> {
         let page = self.internal.pages.load_from_addr(addr);
         if page > ALLOCATING_PAGE {
             unsafe { NonNull::new((*page).get_ptr(addr).cast_mut()).unwrap_unchecked() }
@@ -414,7 +371,7 @@ impl Memory {
     /// Undefined behavior when kept around long enough but the mapping of the pointed to memory in this virtual memory
     /// Can change while holding onto the pointer. This can cause unintended side effects and behavior
     #[inline(always)]
-    pub unsafe fn try_get<T: PermittedData>(
+    pub unsafe fn try_get<T: TriviallyLoadableData>(
         &self,
         addr: u32,
     ) -> Option<NonNull<atomic::Atomic<T>>> {
@@ -428,32 +385,35 @@ impl Memory {
 
     #[cold]
     #[inline(never)]
-    fn failure_load<T: PermittedData>(&self, addr: u32, ordering: Ordering) -> T {
+    fn failure_load<T: TriviallyLoadableData>(&self, addr: u32, ordering: Ordering) -> T {
         let page = self.try_map_page(addr >> PAGE_OFFSET_BITS, FlatPage).0;
         unsafe { (*page).get(addr).load(ordering) }
     }
 
     #[cold]
     #[inline(never)]
-    fn failure_load_le<T: num_traits::PrimInt + PermittedData>(&self, addr: u32, ordering: Ordering) -> T {
+    fn failure_load_le<T: num_traits::PrimInt + TriviallyLoadableData>(
+        &self,
+        addr: u32,
+        ordering: Ordering,
+    ) -> T {
         let page = self.try_map_page(addr >> PAGE_OFFSET_BITS, FlatPage).0;
         unsafe { (*page).get::<T>(addr).load(ordering).to_le() }
     }
 
     #[cold]
     #[inline(never)]
-    fn failure_load_be<T: num_traits::PrimInt + PermittedData>(&self, addr: u32, ordering: Ordering) -> T {
+    fn failure_load_be<T: num_traits::PrimInt + TriviallyLoadableData>(
+        &self,
+        addr: u32,
+        ordering: Ordering,
+    ) -> T {
         let page = self.try_map_page(addr >> PAGE_OFFSET_BITS, FlatPage).0;
         unsafe { (*page).get::<T>(addr).load(ordering).to_be() }
     }
 
     #[inline(always)]
-    pub fn load<T: PermittedData>(&self, addr: u32, ordering: Ordering) -> T {
-        assert!(std::mem::size_of::<T>() <= std::mem::align_of::<T>());
-        assert!(std::mem::size_of::<T>() <= std::mem::size_of::<PageContents>());
-        assert!(std::mem::align_of::<T>() <= std::mem::align_of::<PageContents>());
-
-
+    pub fn load<T: TriviallyLoadableData>(&self, addr: u32, ordering: Ordering) -> T {
         let page = self.internal.pages.load_from_addr(addr);
         if page > ALLOCATING_PAGE {
             unsafe { (*page).get(addr).load(ordering) }
@@ -463,7 +423,11 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn load_le<T: num_traits::PrimInt + PermittedData>(&self, addr: u32, ordering: Ordering) -> T {
+    pub fn load_le<T: num_traits::PrimInt + TriviallyLoadableData>(
+        &self,
+        addr: u32,
+        ordering: Ordering,
+    ) -> T {
         let page = self.internal.pages.load_from_addr(addr);
         if page > ALLOCATING_PAGE {
             unsafe { (*page).get::<T>(addr).load(ordering).to_le() }
@@ -473,7 +437,11 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn load_be<T: num_traits::PrimInt + PermittedData>(&self, addr: u32, ordering: Ordering) -> T {
+    pub fn load_be<T: num_traits::PrimInt + TriviallyLoadableData>(
+        &self,
+        addr: u32,
+        ordering: Ordering,
+    ) -> T {
         let page = self.internal.pages.load_from_addr(addr);
         if page > ALLOCATING_PAGE {
             unsafe { (*page).get::<T>(addr).load(ordering).to_be() }
@@ -484,13 +452,13 @@ impl Memory {
 
     #[cold]
     #[inline(never)]
-    fn failure_store<T: PermittedData>(&self, val: T, addr: u32, ordering: Ordering) {
+    fn failure_store<T: TriviallyLoadableData>(&self, val: T, addr: u32, ordering: Ordering) {
         let page = self.try_map_page(addr >> PAGE_OFFSET_BITS, FlatPage).0;
         unsafe { (*page).get(addr).store(val, ordering) }
     }
 
     #[inline(always)]
-    pub fn store<T: PermittedData>(&self, val: T, addr: u32, ordering: Ordering) {
+    pub fn store<T: TriviallyLoadableData>(&self, val: T, addr: u32, ordering: Ordering) {
         let page = self.internal.pages.load_from_addr(addr);
 
         if page > ALLOCATING_PAGE {
@@ -501,7 +469,12 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn store_be<T: num_traits::PrimInt + PermittedData>(&self, val: T, addr: u32, ordering: Ordering) {
+    pub fn store_be<T: num_traits::PrimInt + TriviallyLoadableData>(
+        &self,
+        val: T,
+        addr: u32,
+        ordering: Ordering,
+    ) {
         let page = self.internal.pages.load_from_addr(addr);
 
         if page > ALLOCATING_PAGE {
@@ -512,7 +485,12 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn store_le<T: num_traits::PrimInt + PermittedData>(&self, val: T, addr: u32, ordering: Ordering) {
+    pub fn store_le<T: num_traits::PrimInt + TriviallyLoadableData>(
+        &self,
+        val: T,
+        addr: u32,
+        ordering: Ordering,
+    ) {
         let page = self.internal.pages.load_from_addr(addr);
 
         if page > ALLOCATING_PAGE {
@@ -523,7 +501,7 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn try_load<T: PermittedData>(&self, addr: u32, ordering: Ordering) -> Option<T> {
+    pub fn try_load<T: TriviallyLoadableData>(&self, addr: u32, ordering: Ordering) -> Option<T> {
         let page = self.internal.pages.load_from_addr(addr);
         if page > ALLOCATING_PAGE {
             Some(unsafe { (*page).get(addr).load(ordering) })
@@ -533,7 +511,11 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn try_load_be<T: num_traits::PrimInt + PermittedData>(&self, addr: u32, ordering: Ordering) -> Option<T> {
+    pub fn try_load_be<T: num_traits::PrimInt + TriviallyLoadableData>(
+        &self,
+        addr: u32,
+        ordering: Ordering,
+    ) -> Option<T> {
         let page = self.internal.pages.load_from_addr(addr);
         if page > ALLOCATING_PAGE {
             Some(unsafe { (*page).get::<T>(addr).load(ordering).to_be() })
@@ -543,7 +525,11 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn try_load_le<T: num_traits::PrimInt + PermittedData>(&self, addr: u32, ordering: Ordering) -> Option<T> {
+    pub fn try_load_le<T: num_traits::PrimInt + TriviallyLoadableData>(
+        &self,
+        addr: u32,
+        ordering: Ordering,
+    ) -> Option<T> {
         let page = self.internal.pages.load_from_addr(addr);
         if page > ALLOCATING_PAGE {
             Some(unsafe { (*page).get::<T>(addr).load(ordering).to_le() })
@@ -553,7 +539,7 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn try_store<T: PermittedData>(
+    pub fn try_store<T: TriviallyLoadableData>(
         &self,
         val: T,
         addr: u32,
@@ -570,7 +556,7 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn try_store_be<T: num_traits::PrimInt + PermittedData>(
+    pub fn try_store_be<T: num_traits::PrimInt + TriviallyLoadableData>(
         &self,
         val: T,
         addr: u32,
@@ -587,7 +573,7 @@ impl Memory {
     }
 
     #[inline(always)]
-    pub fn try_store_le<T: num_traits::PrimInt + PermittedData>(
+    pub fn try_store_le<T: num_traits::PrimInt + TriviallyLoadableData>(
         &self,
         val: T,
         addr: u32,
@@ -613,9 +599,8 @@ pub fn test_set(mem: &Memory, val: u32, addr: u32) {
     mem.store_be(val, addr, Ordering::SeqCst);
 }
 
-
 #[test]
-pub fn allocate_all(){
+pub fn allocate_all() {
     let mem = Memory::new();
 
     for i in (0..=u32::MAX).step_by(PAGE_SIZE) {
@@ -633,17 +618,14 @@ pub fn allocate_all(){
     }
     println!("check: {:.2}s", now.elapsed().as_secs_f32());
 
-    
-
-
     //
     let now = std::time::Instant::now();
-    for i in (0..=1<<25).step_by(4) {
+    for i in (0..=1 << 25).step_by(4) {
         mem.store(i, i, Ordering::Relaxed);
     }
     println!("write: {:.2}s", now.elapsed().as_secs_f32());
     let now = std::time::Instant::now();
-    for i in (0..=1<<25).step_by(4) {
+    for i in (0..=1 << 25).step_by(4) {
         assert_eq!(mem.load::<u32>(i, Ordering::Relaxed), i);
     }
     println!("check: {:.2}s", now.elapsed().as_secs_f32());
@@ -651,8 +633,6 @@ pub fn allocate_all(){
 
 #[test]
 pub fn shared_memory() {
-
-
     #[derive(Clone)]
     struct SharedPage(rclite::Arc<*mut PageContents>);
     impl SharedPage {
@@ -670,7 +650,7 @@ pub fn shared_memory() {
     }
     impl Drop for SharedPage {
         fn drop(&mut self) {
-            if let Some(_) = rclite::Arc::get_mut(&mut self.0){
+            if let Some(_) = rclite::Arc::get_mut(&mut self.0) {
                 unsafe { FlatPage::deinit(&mut FlatPage, *self.0) }
             }
         }
@@ -681,12 +661,12 @@ pub fn shared_memory() {
     mem.map_page(0, shared.clone());
     mem.map_page(1, shared);
 
-    for i in [0, 1, 1<<15, 1<<16-2, 1<<16-1] {
+    for i in [0, 1, 1 << 15, 1 << 16 - 2, 1 << 16 - 1] {
         println!("s{i}");
         _ = mem.store::<u16>(i as u16, i as u32, Ordering::Relaxed);
     }
 
-    for i in [0, 1, 1<<15, 1<<16-2, 1<<16-1] {
+    for i in [0, 1, 1 << 15, 1 << 16 - 2, 1 << 16 - 1] {
         println!("l{i}");
         assert_eq!(
             mem.load::<u16>(i as u32, Ordering::Relaxed),
@@ -699,7 +679,7 @@ pub fn shared_memory() {
 pub fn externally_updating() {
     use std::sync::atomic::AtomicU32;
 
-    struct Nice{
+    struct Nice {
         val: AtomicU32,
         other: AtomicU8,
     }
@@ -711,8 +691,8 @@ pub fn externally_updating() {
             Self(rclite::Arc::new(unsafe { FlatPage::init(&mut FlatPage) }))
         }
 
-        pub fn get(&self) -> &Nice{
-            unsafe{ &*self.0.cast() }
+        pub fn get(&self) -> &Nice {
+            unsafe { &*self.0.cast() }
         }
     }
     unsafe impl Page for SharedPage {
@@ -725,7 +705,7 @@ pub fn externally_updating() {
     }
     impl Drop for SharedPage {
         fn drop(&mut self) {
-            if let Some(_) = rclite::Arc::get_mut(&mut self.0){
+            if let Some(_) = rclite::Arc::get_mut(&mut self.0) {
                 unsafe { FlatPage::deinit(&mut FlatPage, *self.0) }
             }
         }
@@ -735,7 +715,6 @@ pub fn externally_updating() {
     let shared = SharedPage::new();
     let nice = shared.get();
     mem.map_page(0, shared.clone());
-
 
     nice.val.store(558822, Ordering::Relaxed);
     nice.other.store(0xFF, Ordering::Relaxed);
