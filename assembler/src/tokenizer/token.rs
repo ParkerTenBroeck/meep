@@ -10,6 +10,20 @@ pub enum NumberType {
     Float,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrStatus {
+    Valid,
+    InvalidEscape,
+    InvalidNewline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrLabelStatus {
+    NotString,
+    String,
+    InvalidEscape,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(align(8))]
 pub enum Token<'a> {
@@ -25,8 +39,6 @@ pub enum Token<'a> {
     Percent,
     /// ^
     Carrot,
-    /// #
-    Octothorp,
     /// &
     Ampersand,
     /// ~
@@ -67,25 +79,21 @@ pub enum Token<'a> {
     /// ]
     RBracket,
 
-    /// :
-    Colon,
     /// ,
     Comma,
-    /// .
-    Dot,
-    /// ..
-    DotDot,
-    /// ...
-    DotDotDot,
 
-    Label(Sstr<'a>),
+    Label {
+        label: Sstr<'a>,
+        raw: bool,
+        kind: StrLabelStatus,
+    },
     Ident(Sstr<'a>),
     StringLiteral {
         str: Sstr<'a>,
         raw: bool,
         valid: StrStatus,
     },
-    CharLiteral{
+    CharLiteral {
         str: Sstr<'a>,
         raw: bool,
         valid: StrStatus,

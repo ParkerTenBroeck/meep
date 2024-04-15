@@ -1,8 +1,8 @@
 use std::{iter::Peekable, str::Chars};
 
-use crate::tokenizer::token::NumberType;
+use crate::tokenizer::token::{NumberType, StrLabelStatus};
 
-use self::token::Token;
+use self::token::{StrStatus, Token};
 
 pub mod sstr;
 pub mod token;
@@ -44,15 +44,6 @@ impl SpanD {
         }
     }
 
-    fn start_size(start: Position, len: u32) -> Self {
-        Self {
-            line: start.line as u32,
-            col: start.col as u32,
-            offset: start.offset as u32,
-            len,
-        }
-    }
-
     pub fn extend_range(&self, other: &Self) -> Self {
         let start_of = self.offset.min(other.offset);
         let end = (self.offset + self.len).max(other.offset + other.len);
@@ -85,18 +76,9 @@ pub enum TokenizerError<'a> {
     EmptyExponent,
     InvalidBase2Digit(char),
     NoNumberAfterBasePrefix,
-    // MalformedString(byteyarn::YarnBox<'a, str>),
-    ParseIntError(std::num::ParseIntError),
-    ParseFloatError(std::num::ParseFloatError),
-    IntegerTooLargeError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StrStatus {
-    Valid,
-    InvalidEscape,
-    InvalidNewline,
-}
+
 
 type TokenizerResult<'a> = Result<Span<Token<'a>>, Box<Span<TokenizerError<'a>>>>;
 
@@ -116,32 +98,32 @@ pub struct Tokenizer<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StringInformation(u8);
-impl StringInformation{
-    pub fn is_string(&self) -> bool{
+impl StringInformation {
+    pub fn is_string(&self) -> bool {
         self.0 & 0b1 > 0
     }
 
-    pub fn is_char(&self) -> bool{
+    pub fn is_char(&self) -> bool {
         !self.is_string()
     }
 
-    pub fn is_raw(&self) -> bool{
+    pub fn is_raw(&self) -> bool {
         self.0 & 0b10 > 0
     }
 
-    pub fn string() -> Self{
+    pub fn string() -> Self {
         Self(0b1)
     }
 
-    pub fn char() -> Self{
+    pub fn char() -> Self {
         Self(0b0)
     }
 
-    pub fn raw_string() -> Self{
+    pub fn raw_string() -> Self {
         Self(0b11)
     }
 
-    pub fn raw_char() -> Self{
+    pub fn raw_char() -> Self {
         Self(0b10)
     }
 }
@@ -155,8 +137,6 @@ enum State {
     Eq,
     Gt,
     Lt,
-    Dot,
-    DotDot,
     Ident,
     SingleLineCommentSemi,
     SingleLineComment,
@@ -178,6 +158,7 @@ enum State {
     B,
     StringByteEscape1(StringInformation),
     StringByteEscape2(StringInformation),
+    StringLiteralEnd(bool),
 }
 
 fn ident(ident: &str) -> Token {
@@ -200,7 +181,7 @@ impl<'a> Tokenizer<'a> {
         }
     }
 
-    pub fn with_start(mut self, position: Position) -> Self{
+    pub fn with_start(mut self, position: Position) -> Self {
         self.start = position;
         self.current = position;
         self
@@ -273,16 +254,14 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                         self.str_status = StrStatus::Valid;
                         self.state = State::String(StringInformation::char())
                     }
-                    '.' => self.state = State::Dot,
                     'b' => self.state = State::B,
 
-                    ':' => ret = Some(Ok(Token::Colon)),
+                    // ':' => ret = Some(Ok(Token::Colon)),
                     '+' => ret = Some(Ok(Token::Plus)),
                     '-' => ret = Some(Ok(Token::Minus)),
                     '*' => ret = Some(Ok(Token::Asterick)),
                     '%' => ret = Some(Ok(Token::Percent)),
                     '^' => ret = Some(Ok(Token::Carrot)),
-                    '#' => ret = Some(Ok(Token::Octothorp)),
                     '&' => ret = Some(Ok(Token::Ampersand)),
                     '|' => ret = Some(Ok(Token::Pipe)),
 
@@ -304,7 +283,7 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                     }
 
                     c if c.is_whitespace() => self.start = processing,
-                    '_' | '?' => self.state = State::Ident,
+                    '.' | '_' | '?' => self.state = State::Ident,
                     c if c.is_alphabetic() => self.state = State::Ident,
 
                     c => ret = Some(Err(TokenizerError::InvalidChar(c))),
@@ -326,7 +305,13 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                 State::Ident => match c {
                     Some('.' | '_' | '?' | '$' | '#' | '@') => {}
                     Some(c) if c.is_alphanumeric() => {}
-                    Some(':') => ret = Some(Ok(Token::Label(self.str[self.start.offset..self.current.offset-1].into()))),
+                    Some(':') => {
+                        ret = Some(Ok(Token::Label {
+                            label: self.str[self.start.offset..self.current.offset].into(),
+                            raw: false,
+                            kind: StrLabelStatus::NotString,
+                        }))
+                    }
                     _ => unconsume_ret!(
                         self,
                         Ok(ident(&self.str[self.start.offset..self.current.offset]))
@@ -351,14 +336,6 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                     Some('*') => self.state = State::MultiLineComment,
                     _ => unconsume_ret!(self, Ok(Token::Slash)),
                 },
-                State::Dot => match c {
-                    Some('.') => self.state = State::DotDot,
-                    _ => unconsume_ret!(self, Ok(Token::Dot)),
-                },
-                State::DotDot => match c {
-                    Some('.') => ret = Some(Ok(Token::DotDotDot)),
-                    _ => unconsume_ret!(self, Ok(Token::DotDot)),
-                },
                 State::MultiLineComment => match c {
                     None => ret = Some(Err(TokenizerError::UnclosedMultiLineComment)),
                     Some('*') => self.state = State::MultiLineCommentStar,
@@ -370,7 +347,7 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                         ret = Some(Ok(Token::MultiLineComment(
                             self.str[self.start.offset + 2..self.current.offset - 2].into(),
                         )))
-                    },
+                    }
                     _ => {
                         consume = false;
                         self.state = State::MultiLineComment;
@@ -394,17 +371,44 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                     }
                     _ => {}
                 },
+                State::StringLiteralEnd(raw) => match c{
+                    Some(':') => {
+                        let off = if raw { 2 } else { 1 };
+                        let str = self.str[self.start.offset + off..self.current.offset-1].into();
+                        ret = Some(Ok(Token::Label {
+                            label: str,
+                            raw,
+                            kind: match self.str_status{
+                                StrStatus::Valid => StrLabelStatus::String,
+                                StrStatus::InvalidEscape => StrLabelStatus::InvalidEscape,
+                                StrStatus::InvalidNewline => unreachable!(),
+                            } ,
+                        }));
+                    }
+                    _ => {
+                        consume = false;
+                        let off = if raw { 2 } else { 1 };
+                        let str = self.str[self.start.offset + off..self.current.offset].into();
+                        ret = Some(Ok(Token::StringLiteral {
+                            str,
+                            raw: raw,
+                            valid: self.str_status,
+                        }));
+                    }
+                }
                 State::String(str_kind) => match c {
                     Some('\'') if str_kind.is_char() => {
-                        let off = if str_kind.is_raw() {2}else{1};
-                        let str = self.str[self.start.offset+off..self.current.offset].into();
-                        ret = Some(Ok(Token::CharLiteral{ str, raw: str_kind.is_raw(), valid: self.str_status }));
-                    } 
-                    Some('"') if str_kind.is_string() => {    
-                        let off = if str_kind.is_raw() {2}else{1};
-                        let str = self.str[self.start.offset+off..self.current.offset].into();
-                        ret = Some(Ok(Token::StringLiteral{ str, raw: str_kind.is_raw(), valid: self.str_status }));
-                    } 
+                        let off = if str_kind.is_raw() { 2 } else { 1 };
+                        let str = self.str[self.start.offset + off..self.current.offset].into();
+                        ret = Some(Ok(Token::CharLiteral {
+                            str,
+                            raw: str_kind.is_raw(),
+                            valid: self.str_status,
+                        }));
+                    }
+                    Some('"') if str_kind.is_string() => {
+                        self.state = State::StringLiteralEnd(str_kind.is_raw());
+                    }
                     Some('\n') if str_kind.is_char() => {
                         self.str_status = StrStatus::InvalidNewline;
                     }
@@ -412,16 +416,11 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                         self.escape_start = self.current;
                         self.state = State::StringEscape(str_kind);
                     }
-                    Some(_) => {},
+                    Some(_) => {}
                     None => ret = Some(Err(TokenizerError::UnclosedStringLiteral)),
                 },
                 State::StringEscape(kind) => match c {
-                    Some('0')
-                    | Some('n')
-                    | Some('r')
-                    | Some('t')
-                    | Some('\\')
-                    | Some('\'')
+                    Some('0') | Some('n') | Some('r') | Some('t') | Some('\\') | Some('\'')
                     | Some('"') => self.state = State::String(kind),
                     Some('x') => {
                         self.state = State::StringByteEscape1(kind);
@@ -439,15 +438,15 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                     None => {
                         err_ret_state = State::Eof;
                         ret = Some(Err(TokenizerError::UnfinishedEscapeSequence(
-                            &self.str[self.start.offset+1..processing.offset],
+                            &self.str[self.start.offset + 1..processing.offset],
                         )))
                     }
                 },
-                State::StringByteEscape1(kind) => match c{
-                    Some('a'..='f'|'A'..='F'|'0'..='9') => {
-                        if !kind.is_raw() && matches!(c, Some('0'..='7')){
+                State::StringByteEscape1(kind) => match c {
+                    Some('a'..='f' | 'A'..='F' | '0'..='9') => {
+                        if !kind.is_raw() && matches!(c, Some('0'..='7')) {
                             self.state = State::StringByteEscape2(kind);
-                        }else{
+                        } else {
                             err_ret_state = State::StringByteEscape2(kind);
                             update_start_on_error = false;
                             self.str_status = StrStatus::InvalidEscape;
@@ -473,8 +472,8 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                         )))
                     }
                 },
-                State::StringByteEscape2(kind) => match c{
-                    Some('a'..='f'|'A'..='F'|'0'..='9') => {
+                State::StringByteEscape2(kind) => match c {
+                    Some('a'..='f' | 'A'..='F' | '0'..='9') => {
                         self.state = State::String(kind);
                     }
                     Some(_) => {
@@ -489,7 +488,7 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
                     None => {
                         err_ret_state = State::Eof;
                         ret = Some(Err(TokenizerError::UnfinishedEscapeSequence(
-                            &self.str[self.start.offset+1..processing.offset],
+                            &self.str[self.start.offset + 1..processing.offset],
                         )))
                     }
                 },
@@ -672,6 +671,9 @@ impl<'a> std::iter::Iterator for Tokenizer<'a> {
 #[test]
 pub fn test_tokenizer_full() {
     let data = r#"
+    label:
+    "string \t label":
+
     b"raw_string"
     b'raw_char'
     b'\xFF'

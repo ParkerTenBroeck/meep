@@ -1,38 +1,36 @@
 use bytemuck::{Pod, Zeroable};
 
-
-pub trait IntoEntian<T>{
+pub trait IntoEntian<T> {
     fn into_le(self) -> T;
     fn into_be(self) -> T;
 }
 
 macro_rules! impl_ints {
     ($type:ident, $int:ident) => {
-
-        impl IntoEntian<$type> for $int{
-            fn into_le(self) -> $type{
+        impl IntoEntian<$type> for $int {
+            fn into_le(self) -> $type {
                 $type::from_le(self)
             }
 
-            fn into_be(self) -> $type{
+            fn into_be(self) -> $type {
                 $type::from_be(self)
             }
         }
 
-        impl $type{
-            pub fn get_le(&self) -> $int{
+        impl $type {
+            pub fn get_le(&self) -> $int {
                 $int::from_le_bytes(self.0)
             }
 
-            pub fn get_be(&self) -> $int{
+            pub fn get_be(&self) -> $int {
                 $int::from_be_bytes(self.0)
             }
 
-            pub fn from_le(val: $int) -> Self{
+            pub fn from_le(val: $int) -> Self {
                 Self($int::to_le_bytes(val))
             }
 
-            pub fn from_be(val: $int) -> Self{
+            pub fn from_be(val: $int) -> Self {
                 Self($int::to_be_bytes(val))
             }
         }
@@ -63,7 +61,6 @@ impl_ints!(U16, u16);
 impl_ints!(U32, u32);
 impl_ints!(USize, u64);
 
-
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct Header {
@@ -92,8 +89,8 @@ struct Header {
     index_section_header_names: U16,
 }
 
-unsafe impl Pod for Header{}
-unsafe impl Zeroable for Header{}
+unsafe impl Pod for Header {}
+unsafe impl Zeroable for Header {}
 
 #[repr(C, packed)]
 #[derive(Default, Clone, Copy)]
@@ -107,8 +104,8 @@ struct ProgramHeader {
     mem_size: USize,
     align: USize,
 }
-unsafe impl Pod for ProgramHeader{}
-unsafe impl Zeroable for ProgramHeader{}
+unsafe impl Pod for ProgramHeader {}
+unsafe impl Zeroable for ProgramHeader {}
 
 #[repr(C, packed)]
 #[derive(Default, Clone, Copy)]
@@ -125,22 +122,22 @@ struct SectionHeader {
     ent_size: USize,
 }
 
-unsafe impl Pod for SectionHeader{}
-unsafe impl Zeroable for SectionHeader{}
+unsafe impl Pod for SectionHeader {}
+unsafe impl Zeroable for SectionHeader {}
 
 #[repr(C, packed)]
 #[derive(Default, Clone, Copy)]
-struct SymbolTableEntry{
+struct SymbolTableEntry {
     name: U32,
     info: U8,
     other: U8,
     section_index: U16,
     addr: USize,
-    sym_size: USize
+    sym_size: USize,
 }
 
-unsafe impl Pod for SymbolTableEntry{}
-unsafe impl Zeroable for SymbolTableEntry{}
+unsafe impl Pod for SymbolTableEntry {}
+unsafe impl Zeroable for SymbolTableEntry {}
 
 pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io::Result<()> {
     const PROGRAM_HEADERS: usize = 1;
@@ -148,7 +145,6 @@ pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io
     const SYMBOLS: usize = 2;
     const PROGRAM_ALIGN: u64 = 0x1000;
     const PROGRAM_START: u64 = 0x401000;
-
 
     macro_rules! construct_str_table {
         ($vis:vis mod $mode_name:ident{$table_name:ident, $($name:ident:$str:expr $(,)?)*}) => {
@@ -170,26 +166,25 @@ pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io
 
     construct_str_table!(mod str_table{TABLE, _EMPTY:"",TEXT:".text", STRTAB:".strtab", SYMTAB:".symtab", START:"_start"});
 
-
     let elf_header_start = 0;
-    let program_header_start =  elf_header_start + std::mem::size_of::<Header>();
-    let section_header_start = program_header_start
-        + std::mem::size_of::<ProgramHeader>() * PROGRAM_HEADERS;
-    let str_table_start = section_header_start
-        + std::mem::size_of::<SectionHeader>() * SECTION_HEADERS;
+    let program_header_start = elf_header_start + std::mem::size_of::<Header>();
+    let section_header_start =
+        program_header_start + std::mem::size_of::<ProgramHeader>() * PROGRAM_HEADERS;
+    let str_table_start =
+        section_header_start + std::mem::size_of::<SectionHeader>() * SECTION_HEADERS;
 
     let symbol_table_start = str_table_start + str_table::TABLE.len();
 
-    let program_start_unaligned = symbol_table_start 
-        + std::mem::size_of::<SymbolTableEntry>() * SYMBOLS;
+    let program_start_unaligned =
+        symbol_table_start + std::mem::size_of::<SymbolTableEntry>() * SYMBOLS;
 
-    let program_start_file =((program_start_unaligned as u64 + PROGRAM_ALIGN-1) / PROGRAM_ALIGN) * PROGRAM_ALIGN;
+    let program_start_file =
+        ((program_start_unaligned as u64 + PROGRAM_ALIGN - 1) / PROGRAM_ALIGN) * PROGRAM_ALIGN;
 
-    let programs:[ProgramHeader; PROGRAM_HEADERS] = [
-        ProgramHeader {
-        p_type: 1.into_le(),       // PT_LOAD
-        flags: 0x5.into_le(),      // PT_READ PT_EXECUTE
-        file_offset: program_start_file.into_le(), 
+    let programs: [ProgramHeader; PROGRAM_HEADERS] = [ProgramHeader {
+        p_type: 1.into_le(),  // PT_LOAD
+        flags: 0x5.into_le(), // PT_READ PT_EXECUTE
+        file_offset: program_start_file.into_le(),
         virtual_addr: PROGRAM_START.into_le(),
         physical_addr: PROGRAM_START.into_le(),
         file_size: (instructions.len() as u64).into_le(),
@@ -225,8 +220,8 @@ pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io
         },
         SectionHeader {
             name_off: (str_table::TEXT as u32).into_le(),
-            s_type: 1.into_le(),   // SHT_PROGBITS
-            flags: 6.into_le(),    // flags A(allocate in image?) X(exacutable?)
+            s_type: 1.into_le(), // SHT_PROGBITS
+            flags: 6.into_le(),  // flags A(allocate in image?) X(exacutable?)
             virtual_address: PROGRAM_START.into_le(),
             file_off: (program_start_file as u64).into_le(),
             file_size: (instructions.len() as u64).into_le(),
@@ -239,14 +234,14 @@ pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io
 
     let symbols: [SymbolTableEntry; SYMBOLS] = [
         SymbolTableEntry::default(),
-        SymbolTableEntry{
+        SymbolTableEntry {
             name: (str_table::START as u32).into_le(),
             info: (0x12).into_le(),     //global function
-            other: 0.into_le(),    // default
-            section_index: 3.into_le(),    //program section 
+            other: 0.into_le(),         // default
+            section_index: 3.into_le(), //program section
             addr: PROGRAM_START.into_le(),
             sym_size: (instructions.len() as u64).into_le(),
-        }
+        },
     ];
 
     let header = Header {
@@ -273,22 +268,22 @@ pub fn write_elf(file: &mut impl std::io::Write, instructions: &[u8]) -> std::io
     };
     file.write_all(bytemuck::bytes_of(&header))?;
 
-    for ph in &programs{
+    for ph in &programs {
         file.write_all(bytemuck::bytes_of(ph))?;
     }
 
-    for section in &sections{
+    for section in &sections {
         file.write_all(bytemuck::bytes_of(section))?;
     }
 
     file.write_all(str_table::TABLE.as_bytes())?;
 
-    for symbol in &symbols{
+    for symbol in &symbols {
         file.write_all(bytemuck::bytes_of(symbol))?;
     }
 
     // alignment
-    for _ in program_start_unaligned..(program_start_file as usize){
+    for _ in program_start_unaligned..(program_start_file as usize) {
         file.write_all(&[0])?;
     }
 
